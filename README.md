@@ -2,7 +2,7 @@
 
 The service includes REST endpoint which lets customers pre-register their parcels with Post Service Provider and receive an electronic receipt that includes the corresponding Barcode.
 The endpoint accepts a set of parcels information at a time, which make it easy for consumers to either use it in a per parcel basis or in a batch processing mode.
-You can find project requirement in more details at [Requirements](docs/Requirements.pdf). In this document, you will find instructions, decisions, and relevant technical details regarding how the codebase is developed.
+You can find project requirement in more details at [Requirements](docs/Pre-AnnouncementLabelSample.pdf). In this document, you will find instructions, decisions, and relevant technical details regarding how the codebase is developed.
 
 <br/>
 
