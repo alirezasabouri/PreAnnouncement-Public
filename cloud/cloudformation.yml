@@ -1,0 +1,260 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  PreAnnouncement Service resources to receive and process parcel data upfront
+##########################################################################
+#  Parameters & Globals                                                  #
+##########################################################################
+Parameters:
+  PreAnnouncementTableName:
+    Type: "String"
+    Description: "Name of PreAnnouncement table"
+    Default: "PreAnnouncement-table"
+  UserEmail:
+    Type: String
+    Description: Test user's email
+  AllowedCallbacks:
+    Type: List<String>
+    Description: List of URLs that the application is allowed to redirect to
+  AuthDomainParam:
+    Type: String
+    Description: Cognito auth domain
+Globals:
+  Function:
+    Timeout: 60
+    MemorySize: 128
+    Tracing: Active
+Resources:
+##########################################################################
+#  Dynamo DB Table                                                      #
+##########################################################################
+  PreAnnouncementTable:
+    Type: "AWS::DynamoDB::Table"
+    Properties:
+      AttributeDefinitions:
+        - AttributeName: "Id"
+          AttributeType: "S"
+        - AttributeName: "Barcode"
+          AttributeType: "S"
+        - AttributeName: "Timestamp"
+          AttributeType: "S"
+        - AttributeName: "SenderName"
+          AttributeType: "S"
+        - AttributeName: "SenderAddress"
+          AttributeType: "S"
+        - AttributeName: "RecipientName"
+          AttributeType: "S"
+        - AttributeName: "RecipientAddress"
+          AttributeType: "S"
+        - AttributeName: "DispatchingService"
+          AttributeType: "S"
+        - AttributeName: "IsValid"
+          AttributeType: "BOOL"
+        - AttributeName: "ProceedSuccessfully"
+          AttributeType: "BOOL"
+      KeySchema:
+        - AttributeName: "Id"
+          KeyType: "HASH"
+      TableName: !Sub ${PreAnnouncementTableName}
+      GlobalSecondaryIndexes:
+        - IndexName: "Barcode-key"
+          KeySchema:
+            - AttributeName: "Barcode"
+              KeyType: "HASH"
+          Projection:
+            ProjectionType: "ALL"
+      BillingMode: PAY_PER_REQUEST
+      SSESpecification:
+        SSEEnabled: false
+      StreamSpecification:
+        StreamViewType: NEW_AND_OLD_IMAGES
+      Tags:
+        - Key: "Name"
+          Value: !Sub "${PreAnnouncementTableName}"
+##########################################################################
+#  Lambda functions                                                      #
+##########################################################################
+  ProcessPreAnnouncement:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ./artifacts/PreAnnouncement.Lambda.zip
+      Handler: PreAnnouncement.Lambda::PreAnnouncement.Lambda.ProcessFunction::Handler
+      Runtime: dotnetcore3.1
+  PersistPreAnnouncement:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ./artifacts/PreAnnouncement.Lambda.zip
+      Handler: PreAnnouncement.Lambda::PreAnnouncement.Lambda.PersistFunction::Handler
+      Runtime: dotnetcore3.1
+##########################################################################
+#   STEP FUNCTION                                                        #
+##########################################################################
+  ProcessPreAnnouncementRequestSync:
+    Type: AWS::Serverless::StateMachine 
+    Properties:
+      DefinitionUri: sfn-template.asl.json
+      Tracing:
+        Enabled: true
+      DefinitionSubstitutions:
+        ProcessPreAnnouncement: !Ref ProcessPreAnnouncement
+        PersistPreAnnouncement: !Ref PersistPreAnnouncement
+      Policies:
+        - LambdaInvokePolicy:
+            FunctionName: !Ref ProcessPreAnnouncement
+        - LambdaInvokePolicy:
+            FunctionName: !Ref PersistPreAnnouncement
+      Type: EXPRESS
+##########################################################################
+#   HTTP API                                                             #
+##########################################################################
+  ProcessApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      DefinitionBody:
+        'Fn::Transform':
+          Name: 'AWS::Include'
+          Parameters:
+            Location: 'api.yaml'
+    DefaultAuthorizer: ApiAuthorizer
+        Authorizers:
+          MyCognitoAuthorizer:
+            UserPoolArn: !GetAtt MyCognitoUserPool.Arn
+  ProcessApiResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ProcessApi
+      PathPart: test
+      ParentId:
+        Fn::GetAtt:
+          - ProcessApi
+          - RootResourceId
+  ApiAuthorizer:
+    Type: AWS::ApiGateway::Authorizer
+    Properties:
+      IdentitySource: method.request.header.authorization
+      Name: CognitoAuthorizer
+      ProviderARNs:
+        - Fn::GetAtt:
+            - CognitoUsers
+            - Arn
+      RestApiId: !Ref ProcessApiResource
+      Type: COGNITO_USER_POOLS            
+##########################################################################
+#   Cognito                                                              #
+##########################################################################
+CognitoUsers:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: test-pool
+      UsernameConfiguration:
+        CaseSensitive: false
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: true
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireLowercase: true
+          RequireSymbols: true
+          RequireUppercase: true
+          TemporaryPasswordValidityDays: 1
+      UsernameAttributes:
+        - email
+      MfaConfiguration: "OFF"
+      Schema:
+        - AttributeDataType: String
+          DeveloperOnlyAttribute: false
+          Mutable: true
+          Name: email
+  ServerAppClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref CognitoUsers
+      ClientName: ServerClient
+      GenerateSecret: true
+      RefreshTokenValidity: 30
+      AllowedOAuthFlows:
+        - code
+        - implicit
+      ExplicitAuthFlows:
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+      CallbackURLs: !Ref AllowedCallbacks
+      AllowedOAuthScopes:
+        - email
+        - openid
+        - profile
+      AllowedOAuthFlowsUserPoolClient: true
+      PreventUserExistenceErrors: ENABLED
+      SupportedIdentityProviders:
+        - COGNITO
+  ClientAppClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref CognitoUsers
+      ClientName: ClientApp
+      GenerateSecret: false
+      RefreshTokenValidity: 30
+      AllowedOAuthFlows:
+        - code
+        - implicit
+      ExplicitAuthFlows:
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+      CallbackURLs: !Ref AllowedCallbacks
+      AllowedOAuthScopes:
+        - email
+        - openid
+        - profile
+        - aws.cognito.signin.user.admin
+      AllowedOAuthFlowsUserPoolClient: true
+      PreventUserExistenceErrors: ENABLED
+      SupportedIdentityProviders:
+        - COGNITO
+  AuthDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      UserPoolId: !Ref CognitoUsers
+      Domain: !Ref AuthDomainParam
+  TestUser:
+    Type: AWS::Cognito::UserPoolUser
+    Properties:
+      UserPoolId: !Ref CognitoUsers
+      Username: !Ref UserEmail
+      UserAttributes:
+        - Name: email
+          Value: !Ref UserEmail
+##########################################################################
+#   Roles                                                               #
+##########################################################################
+  HttpApiRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+              - apigateway.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Policies:
+      - PolicyName: AllowSFNExec
+        PolicyDocument:
+          Version: 2012-10-17
+          Statement:
+            - Effect: Allow
+              Action: "states:StartSyncExecution"
+              Resource: !GetAtt ProcessPreAnnouncementRequestSync.Arn
+##########################################################################
+#   Outputs                                                              #
+##########################################################################
+Outputs:
+
+  PreAnnouncementDataTable:
+    Description: DynamoDB Table
+    Value: !Ref PreAnnouncementTable
+  StepFunctions:
+    Description: "Step Functions"
+    Value: !GetAtt ProcessPreAnnouncementRequestSync.Arn
+
